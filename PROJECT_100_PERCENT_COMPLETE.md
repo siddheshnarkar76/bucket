@@ -114,7 +114,7 @@ BHIV_Central_Depository-main/
 
 ## 🎯 QUALITY METRICS
 
-### Code Quality: 100%
+### Code Quality: 100% 
 - ✅ Type hints: 100%
 - ✅ Docstrings: 100%
 - ✅ Error handling: 100%

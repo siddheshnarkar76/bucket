@@ -1,6 +1,8 @@
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, ConfigDict
 from agents.agent_registry import AgentRegistry
 from agents.agent_runner import AgentRunner
 from baskets.basket_manager import AgentBasket
@@ -102,6 +104,15 @@ from handlers.core_violation_handler import core_violation_handler, ViolationSev
 from services.bucket_service import store_artifact, get_artifact, list_artifacts
 from services.replay_service import validate_replay, validate_artifact_chain
 from services.append_only_storage import append_only_storage
+from validators.bucket_contract_validator import (
+    ContractValidationError,
+    ensure_core_integration,
+    ensure_payload_size_within_limit,
+    ensure_lineage_request_valid,
+    artifact_matches_filters,
+    filter_audit_entry,
+    utc_iso_timestamp,
+)
 
 logger = get_logger(__name__)
 execution_logger = get_execution_logger()
@@ -116,6 +127,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime
+from uuid import uuid4
 import uvicorn
 
 load_dotenv()
@@ -174,6 +186,95 @@ class BasketInput(BaseModel):
     config: Optional[Dict] = Field(None, description="Custom basket configuration")
     input_data: Optional[Dict] = Field(None, description="Input data for the basket execution")
 
+
+class ContractBaseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ArtifactEnvelope(ContractBaseModel):
+    artifact_id: str
+    timestamp_utc: str
+    schema_version: str
+    source_module_id: str
+    artifact_type: str
+    parent_hash: Optional[str] = None
+    payload: Dict
+    hash: Optional[str] = None
+
+
+class BucketArtifactsWriteRequest(ContractBaseModel):
+    requester_id: str
+    integration_id: str
+    artifact: ArtifactEnvelope
+
+
+class BucketArtifactsReadRequest(ContractBaseModel):
+    requester_id: str
+    integration_id: str
+    artifact_id: str
+
+
+class BucketArtifactsQueryRequest(ContractBaseModel):
+    requester_id: str
+    integration_id: str
+    limit: int = Field(100, ge=1, le=1000)
+    offset: int = Field(0, ge=0)
+    artifact_type: Optional[str] = None
+    source_module_id: Optional[str] = None
+
+
+class BucketAuditReadRequest(ContractBaseModel):
+    requester_id: str
+    integration_id: str
+    limit: int = Field(100, ge=1, le=1000)
+    artifact_id: Optional[str] = None
+    operation_type: Optional[str] = None
+    status: Optional[str] = None
+
+
+def _new_request_id() -> str:
+    return str(uuid4())
+
+
+def _success_response(request_id: str, data: Dict) -> Dict:
+    return {
+        "success": True,
+        "request_id": request_id,
+        "timestamp": utc_iso_timestamp(),
+        "data": data,
+    }
+
+
+def _error_response(request_id: str, error: str) -> Dict:
+    return {
+        "success": False,
+        "error": error,
+        "request_id": request_id,
+        "timestamp": utc_iso_timestamp(),
+    }
+
+
+async def _log_contract_event(
+    operation_type: str,
+    artifact_id: str,
+    requester_id: str,
+    status: str,
+    request_id: str,
+    error_message: Optional[str] = None,
+    data_after: Optional[Dict] = None,
+) -> None:
+    await audit_middleware.log_operation(
+        operation_type=operation_type,
+        artifact_id=artifact_id,
+        requester_id=requester_id,
+        integration_id="core_contract_api",
+        data_after=data_after,
+        status=status,
+        error_message=error_message,
+    )
+    logger.info(f"contract_event operation={operation_type} status={status} request_id={request_id}")
+
+
 async def connect_socketio():
     max_retries = 3
     for attempt in range(max_retries):
@@ -231,6 +332,24 @@ async def lifespan(app: FastAPI):
     logger.info("Disconnected from Socket.IO, MongoDB, and Redis")
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    request_id = _new_request_id()
+    error_message = "schema_validation_failed"
+
+    try:
+        error_items = exc.errors()
+        if error_items:
+            first_error = error_items[0]
+            location = " -> ".join(str(part) for part in first_error.get("loc", []))
+            message = first_error.get("msg", "invalid request")
+            error_message = f"{location}: {message}" if location else message
+    except Exception:
+        error_message = "schema_validation_failed"
+
+    return JSONResponse(status_code=422, content=_error_response(request_id, error_message))
 
 app.add_middleware(
     CORSMiddleware,
@@ -2767,6 +2886,296 @@ async def get_bucket_certification():
             "docs/DOMAIN_INGESTION_READINESS.md"
         ]
     }
+
+
+# ============================================================================
+# CORE-FACING CONTRACT ENDPOINTS (STRICT API BOUNDARY)
+# ============================================================================
+
+@app.post("/bucket/artifacts/write")
+async def bucket_contract_write(request_body: BucketArtifactsWriteRequest):
+    """Contract endpoint for Core artifact writes with strict boundary enforcement."""
+    request_id = _new_request_id()
+    logger.info(f"contract_request endpoint=/bucket/artifacts/write request_id={request_id}")
+
+    artifact = request_body.artifact.model_dump(exclude_none=False)
+
+    try:
+        ensure_core_integration(request_body.integration_id)
+        ensure_payload_size_within_limit(artifact.get("payload"), append_only_storage.MAX_PAYLOAD_SIZE)
+
+        # Client hash is ignored by design; server computes authoritative hash.
+        artifact.pop("hash", None)
+
+        chain_state = append_only_storage.get_chain_state()
+        ensure_lineage_request_valid(artifact, chain_state.get("last_hash"))
+
+        is_valid, error = append_only_storage.validate_artifact_structure(artifact)
+        if not is_valid:
+            raise ContractValidationError(error or "invalid_artifact_structure", "invalid_schema")
+
+        stored_artifact = append_only_storage.store_artifact(artifact)
+
+        await _log_contract_event(
+            operation_type="CREATE",
+            artifact_id=stored_artifact.get("artifact_id", "unknown"),
+            requester_id=request_body.requester_id,
+            status="success",
+            request_id=request_id,
+            data_after=stored_artifact,
+        )
+
+        return _success_response(
+            request_id,
+            {
+                "artifact_id": stored_artifact.get("artifact_id"),
+                "hash": stored_artifact.get("hash"),
+                "parent_hash": stored_artifact.get("parent_hash"),
+                "timestamp_utc": stored_artifact.get("timestamp_utc"),
+                "storage_type": "append_only",
+                "deterministic": True,
+            },
+        )
+
+    except ContractValidationError as e:
+        await _log_contract_event(
+            operation_type="CREATE",
+            artifact_id=artifact.get("artifact_id", "unknown"),
+            requester_id=request_body.requester_id,
+            status="blocked",
+            request_id=request_id,
+            error_message=str(e),
+        )
+        return JSONResponse(status_code=400, content=_error_response(request_id, str(e)))
+    except ValueError as e:
+        await _log_contract_event(
+            operation_type="CREATE",
+            artifact_id=artifact.get("artifact_id", "unknown"),
+            requester_id=request_body.requester_id,
+            status="blocked",
+            request_id=request_id,
+            error_message=str(e),
+        )
+        return JSONResponse(status_code=400, content=_error_response(request_id, str(e)))
+    except Exception as e:
+        await _log_contract_event(
+            operation_type="CREATE",
+            artifact_id=artifact.get("artifact_id", "unknown"),
+            requester_id=request_body.requester_id,
+            status="failure",
+            request_id=request_id,
+            error_message=str(e),
+        )
+        return JSONResponse(status_code=500, content=_error_response(request_id, "internal_server_error"))
+
+
+@app.post("/bucket/artifacts/read")
+async def bucket_contract_read(request_body: BucketArtifactsReadRequest):
+    """Contract endpoint for deterministic artifact reads."""
+    request_id = _new_request_id()
+    logger.info(f"contract_request endpoint=/bucket/artifacts/read request_id={request_id}")
+
+    try:
+        ensure_core_integration(request_body.integration_id)
+
+        artifact = append_only_storage.get_artifact(request_body.artifact_id)
+        if artifact is None:
+            await _log_contract_event(
+                operation_type="READ",
+                artifact_id=request_body.artifact_id,
+                requester_id=request_body.requester_id,
+                status="blocked",
+                request_id=request_id,
+                error_message="artifact_not_found",
+            )
+            return JSONResponse(status_code=404, content=_error_response(request_id, "artifact_not_found"))
+
+        await _log_contract_event(
+            operation_type="READ",
+            artifact_id=request_body.artifact_id,
+            requester_id=request_body.requester_id,
+            status="success",
+            request_id=request_id,
+            data_after={"artifact_id": request_body.artifact_id},
+        )
+
+        return _success_response(
+            request_id,
+            {
+                "artifact": artifact,
+                "storage_type": "append_only",
+                "chain_verified": True,
+            },
+        )
+
+    except ContractValidationError as e:
+        await _log_contract_event(
+            operation_type="READ",
+            artifact_id=request_body.artifact_id,
+            requester_id=request_body.requester_id,
+            status="blocked",
+            request_id=request_id,
+            error_message=str(e),
+        )
+        return JSONResponse(status_code=400, content=_error_response(request_id, str(e)))
+    except Exception as e:
+        await _log_contract_event(
+            operation_type="READ",
+            artifact_id=request_body.artifact_id,
+            requester_id=request_body.requester_id,
+            status="failure",
+            request_id=request_id,
+            error_message=str(e),
+        )
+        return JSONResponse(status_code=500, content=_error_response(request_id, "internal_server_error"))
+
+
+@app.post("/bucket/artifacts/query")
+async def bucket_contract_query(request_body: BucketArtifactsQueryRequest):
+    """Contract endpoint for deterministic artifact metadata queries."""
+    request_id = _new_request_id()
+    logger.info(f"contract_request endpoint=/bucket/artifacts/query request_id={request_id}")
+
+    try:
+        ensure_core_integration(request_body.integration_id)
+
+        chain_state = append_only_storage.get_chain_state()
+        total_artifact_count = max(chain_state.get("artifact_count", 0), 0)
+
+        all_result = append_only_storage.list_artifacts(
+            limit=max(total_artifact_count, 1),
+            offset=0,
+        )
+        all_artifacts = all_result.get("artifacts", [])
+
+        filtered_artifacts = [
+            item for item in all_artifacts
+            if artifact_matches_filters(
+                item,
+                artifact_type=request_body.artifact_type,
+                source_module_id=request_body.source_module_id,
+            )
+        ]
+
+        paged_artifacts = filtered_artifacts[
+            request_body.offset:request_body.offset + request_body.limit
+        ]
+
+        await _log_contract_event(
+            operation_type="QUERY",
+            artifact_id="query",
+            requester_id=request_body.requester_id,
+            status="success",
+            request_id=request_id,
+            data_after={"returned": len(paged_artifacts), "total": len(filtered_artifacts)},
+        )
+
+        return _success_response(
+            request_id,
+            {
+                "artifacts": paged_artifacts,
+                "count": len(paged_artifacts),
+                "total": len(filtered_artifacts),
+                "limit": request_body.limit,
+                "offset": request_body.offset,
+                "filters": {
+                    "artifact_type": request_body.artifact_type,
+                    "source_module_id": request_body.source_module_id,
+                },
+                "storage_type": "append_only",
+            },
+        )
+
+    except ContractValidationError as e:
+        await _log_contract_event(
+            operation_type="QUERY",
+            artifact_id="query",
+            requester_id=request_body.requester_id,
+            status="blocked",
+            request_id=request_id,
+            error_message=str(e),
+        )
+        return JSONResponse(status_code=400, content=_error_response(request_id, str(e)))
+    except Exception as e:
+        await _log_contract_event(
+            operation_type="QUERY",
+            artifact_id="query",
+            requester_id=request_body.requester_id,
+            status="failure",
+            request_id=request_id,
+            error_message=str(e),
+        )
+        return JSONResponse(status_code=500, content=_error_response(request_id, "internal_server_error"))
+
+
+@app.post("/bucket/audit/read")
+async def bucket_contract_audit_read(request_body: BucketAuditReadRequest):
+    """Contract endpoint for auditable read access to request outcomes."""
+    request_id = _new_request_id()
+    logger.info(f"contract_request endpoint=/bucket/audit/read request_id={request_id}")
+
+    try:
+        ensure_core_integration(request_body.integration_id)
+
+        candidate_limit = min(request_body.limit * 5, 1000)
+        recent_operations = await audit_middleware.get_recent_operations(
+            limit=candidate_limit,
+            operation_type=request_body.operation_type,
+        )
+
+        filtered_operations = [
+            op for op in recent_operations
+            if filter_audit_entry(
+                op,
+                artifact_id=request_body.artifact_id,
+                operation_type=request_body.operation_type,
+                status=request_body.status,
+            )
+        ][:request_body.limit]
+
+        await _log_contract_event(
+            operation_type="AUDIT_READ",
+            artifact_id=request_body.artifact_id or "audit",
+            requester_id=request_body.requester_id,
+            status="success",
+            request_id=request_id,
+            data_after={"returned": len(filtered_operations)},
+        )
+
+        return _success_response(
+            request_id,
+            {
+                "records": filtered_operations,
+                "count": len(filtered_operations),
+                "limit": request_body.limit,
+                "filters": {
+                    "artifact_id": request_body.artifact_id,
+                    "operation_type": request_body.operation_type,
+                    "status": request_body.status,
+                },
+            },
+        )
+
+    except ContractValidationError as e:
+        await _log_contract_event(
+            operation_type="AUDIT_READ",
+            artifact_id=request_body.artifact_id or "audit",
+            requester_id=request_body.requester_id,
+            status="blocked",
+            request_id=request_id,
+            error_message=str(e),
+        )
+        return JSONResponse(status_code=400, content=_error_response(request_id, str(e)))
+    except Exception as e:
+        await _log_contract_event(
+            operation_type="AUDIT_READ",
+            artifact_id=request_body.artifact_id or "audit",
+            requester_id=request_body.requester_id,
+            status="failure",
+            request_id=request_id,
+            error_message=str(e),
+        )
+        return JSONResponse(status_code=500, content=_error_response(request_id, "internal_server_error"))
 
 @app.post("/adaptive-query")
 async def process_adaptive_query(request: AdaptiveLegalQueryRequest):
