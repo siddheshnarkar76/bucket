@@ -105,4 +105,4 @@ def filter_audit_entry(
         return False
     if status and entry.get("status") != status:
         return False
-    return True
+    return True 

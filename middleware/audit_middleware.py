@@ -7,6 +7,7 @@ Enforces WORM (Write Once Read Many) for audit entries
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from utils.logger import get_logger
+from services.file_audit_store import FileAuditStore
 
 logger = get_logger(__name__)
 
@@ -15,13 +16,22 @@ class AuditMiddleware:
     
     def __init__(self, db=None):
         """Initialize audit middleware with optional MongoDB connection"""
-        self.audit_collection = db.audit_logs if db is not None else None
-        self.in_memory_audit = []  # Fallback if MongoDB unavailable
-        
-        if self.audit_collection is not None:
-            logger.info("Audit middleware initialized with MongoDB")
+        # Prefer MongoDB collection when provided; otherwise use a persistent file-based fallback
+        if db is not None:
+            try:
+                self.audit_collection = db.audit_logs
+                logger.info("Audit middleware initialized with MongoDB")
+            except Exception:
+                self.audit_collection = None
+                logger.warning("Audit middleware could not initialize MongoDB collection; falling back to file store")
         else:
-            logger.warning("Audit middleware using in-memory fallback (not persistent)")
+            self.audit_collection = None
+
+        # File-based persistent fallback (data/audit.log)
+        self.file_store = FileAuditStore()
+
+        if self.audit_collection is None:
+            logger.warning("Audit middleware using file-based fallback (data/audit.log)")
     
     async def log_operation(
         self,
@@ -72,11 +82,11 @@ class AuditMiddleware:
                 logger.debug(f"Audit entry created: {audit_id}")
                 return audit_id
             else:
-                # Fallback to in-memory
-                audit_entry["_id"] = f"mem_{len(self.in_memory_audit)}"
-                self.in_memory_audit.append(audit_entry)
-                logger.debug(f"Audit entry created in memory: {audit_entry['_id']}")
-                return audit_entry["_id"]
+                # Fallback to file-based persistent store
+                result = self.file_store.insert_one(audit_entry)
+                audit_id = result.inserted_id
+                logger.debug(f"Audit entry created in file store: {audit_id}")
+                return audit_id
         
         except Exception as e:
             logger.error(f"Failed to create audit entry: {e}")
@@ -110,12 +120,12 @@ class AuditMiddleware:
                 
                 return history
             else:
-                # Fallback to in-memory
-                history = [
-                    entry for entry in self.in_memory_audit
-                    if entry.get("artifact_id") == artifact_id
-                ]
-                return sorted(history, key=lambda x: x.get("timestamp", datetime.min))[:limit]
+                # Fallback to file-based store
+                cursor = self.file_store.find({"artifact_id": artifact_id}).sort("timestamp", 1).limit(limit)
+                history = []
+                for entry in cursor:
+                    history.append(entry)
+                return history
         
         except Exception as e:
             logger.error(f"Failed to get artifact history: {e}")
@@ -149,12 +159,12 @@ class AuditMiddleware:
                 
                 return activities
             else:
-                # Fallback to in-memory
-                activities = [
-                    entry for entry in self.in_memory_audit
-                    if entry.get("requester_id") == requester_id
-                ]
-                return sorted(activities, key=lambda x: x.get("timestamp", datetime.max), reverse=True)[:limit]
+                # Fallback to file-based store
+                cursor = self.file_store.find({"requester_id": requester_id}).sort("timestamp", -1).limit(limit)
+                activities = []
+                for entry in cursor:
+                    activities.append(entry)
+                return activities
         
         except Exception as e:
             logger.error(f"Failed to get user activities: {e}")
@@ -190,14 +200,15 @@ class AuditMiddleware:
                 
                 return operations
             else:
-                # Fallback to in-memory
-                operations = self.in_memory_audit
+                # Fallback to file-based store
+                query = {}
                 if operation_type:
-                    operations = [
-                        entry for entry in operations
-                        if entry.get("operation_type") == operation_type
-                    ]
-                return sorted(operations, key=lambda x: x.get("timestamp", datetime.max), reverse=True)[:limit]
+                    query["operation_type"] = operation_type
+                cursor = self.file_store.find(query).sort("timestamp", -1).limit(limit)
+                operations = []
+                for entry in cursor:
+                    operations.append(entry)
+                return operations
         
         except Exception as e:
             logger.error(f"Failed to get recent operations: {e}")
@@ -229,12 +240,12 @@ class AuditMiddleware:
                 
                 return failures
             else:
-                # Fallback to in-memory
-                failures = [
-                    entry for entry in self.in_memory_audit
-                    if entry.get("status") in ["failure", "blocked"]
-                ]
-                return sorted(failures, key=lambda x: x.get("timestamp", datetime.max), reverse=True)[:limit]
+                # Fallback to file-based store
+                cursor = self.file_store.find({"status": {"$in": ["failure", "blocked"]}}).sort("timestamp", -1).limit(limit)
+                failures = []
+                for entry in cursor:
+                    failures.append(entry)
+                return failures
         
         except Exception as e:
             logger.error(f"Failed to get failed operations: {e}")
