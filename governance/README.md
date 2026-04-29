@@ -271,3 +271,23 @@ Any schema changes = drift detected → escalate to owner.
 ---
 
 **For detailed documentation, see `IMPLEMENTATION.md`, `BUCKET_V1_SNAPSHOT.md`, `INTEGRATION_BOUNDARY.md`, and `RETENTION_POSTURE.md`**
+
+## Recent Implementation Additions
+
+The repository has been extended with runtime features, tests, and evidence for Core integration. Key additions made during the current implementation phase:
+
+- Implemented Core-facing contract API endpoints (entrypoint: `main.py`): `/bucket/artifacts/write`, `/bucket/artifacts/read`, `/bucket/artifacts/query`, and `/bucket/audit/read`.
+- Added strict contract validation in `validators/bucket_contract_validator.py` (integration_id enforcement, payload-size checks, lineage validation).
+- Added append-only artifact storage: `services/append_only_storage.py` (server-computed SHA256, chain state, store/get/list helpers).
+- Added persistent file-based audit fallback: `services/file_audit_store.py` (JSONL append + cursor-like `find()`), and wired it into `middleware/audit_middleware.py` so audit records persist when MongoDB is not configured.
+- Updated `middleware/audit_middleware.py` to prefer MongoDB (when `MONGODB_URI` is set) and otherwise use the file-based audit store.
+- Added unit tests for the contract validator (tests like `test_bucket_contract_validator.py`) and ran them locally.
+- Created `REVIEW_PACKET.md` with live request/response evidence (successful writes/reads, validation failures, audit entries, oversized-payload proof).
+- Included a Postman collection: `BHIV_Bucket_Contract.postman_collection.json` for manual API replay.
+- Created a local git branch `contract-api` containing these changes (push to remote is pending due to remote permission / 403 error).
+- Enforced payload-size limits at the API boundary and validated with an oversized payload test (server returns a clear "payload size exceeds limit" error).
+
+Notes & next steps:
+
+- To enable DB-backed audit persistence, set `MONGODB_URI` in your `.env` and restart the server.
+- To publish these changes to the remote, provide credentials (PAT) or configure SSH so the `contract-api` branch can be pushed; alternatively I can prepare a ZIP/patch for manual upload.
