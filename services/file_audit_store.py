@@ -83,6 +83,12 @@ class FileAuditStore:
         base_parent.mkdir(parents=True, exist_ok=True)
         self.path = base
 
+    @staticmethod
+    def _json_default(value: Any):
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
+
     def insert_one(self, doc: Dict[str, Any]):
         # Ensure deterministic timestamp and id
         entry = dict(doc)
@@ -93,7 +99,7 @@ class FileAuditStore:
 
         # Serialize and append as JSONL
         with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.write(json.dumps(entry, ensure_ascii=False, default=self._json_default) + "\n")
 
         return InsertOneResult(inserted_id=entry["_id"])
 
