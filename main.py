@@ -353,7 +353,7 @@ async def request_validation_exception_handler(request: Request, exc: RequestVal
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8000", "http://localhost:8080", "http://localhost:5000", "http://localhost:3000", "http://localhost:5173", "http://localhost:5174"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2716,6 +2716,19 @@ async def get_chain_state():
         }
     except Exception as e:
         logger.error(f"Failed to get chain state: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/bucket/latest-hash")
+async def get_latest_hash():
+    """Get the latest hash in the chain for verification."""
+    try:
+        chain_state = append_only_storage.get_chain_state()
+        return {
+            "last_hash": chain_state.get("last_hash"),
+            "artifact_count": chain_state.get("artifact_count", 0)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get latest hash: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/bucket/storage-stats")

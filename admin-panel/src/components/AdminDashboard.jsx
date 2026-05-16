@@ -111,13 +111,12 @@ const AdminDashboard = () => {
           <div className="connection-error">
             <h3>⚠️ Backend Connection Error</h3>
             <p>
-              Cannot connect to the AI Integration backend at
-              http://localhost:8000
+              Cannot connect to the AI Integration backend.
             </p>
             <p>Please ensure:</p>
             <ul>
-              <li>The FastAPI server is running (python main.py)</li>
-              <li>The server is accessible at http://localhost:8000</li>
+              <li>The FastAPI server is running</li>
+              <li>The backend URL is correct and accessible</li>
               <li>CORS is properly configured</li>
             </ul>
             <button onClick={checkHealth} className="retry-connection-btn">
@@ -159,7 +158,7 @@ const AdminDashboard = () => {
 
       <footer className="dashboard-footer">
         <p>AI Integration Platform - Admin Panel</p>
-        <p>Backend: http://localhost:8000 | Frontend: http://localhost:5173</p>
+        <p>Backend: {import.meta.env.VITE_API_URL || "http://localhost:8000"} | Frontend: {window.location.origin}</p>
       </footer>
     </div>
   );
