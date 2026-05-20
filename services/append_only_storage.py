@@ -46,6 +46,7 @@ class AppendOnlyStorage:
     MAX_PAYLOAD_SIZE = 16 * 1024 * 1024  # 16MB (configurable)
     REQUIRED_METADATA_FIELDS = [
         "artifact_id",
+        "trace_id",
         "timestamp_utc",
         "schema_version",
         "source_module_id",
@@ -53,6 +54,7 @@ class AppendOnlyStorage:
     ]
     ALLOWED_ENVELOPE_FIELDS = [
         "artifact_id",
+        "trace_id",
         "timestamp_utc",
         "schema_version",
         "source_module_id",
@@ -162,6 +164,7 @@ class AppendOnlyStorage:
         # Create deterministic representation
         hash_input = {
             "artifact_id": artifact.get("artifact_id"),
+            "trace_id": artifact.get("trace_id"),
             "timestamp_utc": artifact.get("timestamp_utc"),
             "schema_version": artifact.get("schema_version"),
             "source_module_id": artifact.get("source_module_id"),
@@ -177,6 +180,12 @@ class AppendOnlyStorage:
         hash_bytes = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
         
         return hash_bytes
+
+    def _extract_artifact_payload(self, entry: Dict) -> Dict:
+        """Return the client artifact payload exactly as stored."""
+        if isinstance(entry, dict) and "artifact" in entry and isinstance(entry["artifact"], dict):
+            return entry["artifact"]
+        return entry
     
     def validate_artifact_structure(self, artifact: Dict) -> Tuple[bool, Optional[str]]:
         """
@@ -274,8 +283,12 @@ class AppendOnlyStorage:
             raise ValueError(f"Duplicate artifact_id: {artifact_id}")
         
         # 3. Compute server-side hash (NEVER trust client)
-        computed_hash = self.compute_hash(artifact)
-        artifact["hash"] = computed_hash
+        artifact_copy = json.loads(json.dumps(artifact))
+        computed_hash = self.compute_hash(artifact_copy)
+        record = {
+            "artifact": artifact_copy,
+            "hash": computed_hash,
+        }
         
         # 4. Append to log (atomic write)
         try:
@@ -283,8 +296,8 @@ class AppendOnlyStorage:
                 # Get current position before write
                 position = f.tell()
                 
-                # Write artifact as single line (JSONL format)
-                f.write(json.dumps(artifact, separators=(',', ':')) + '\n')
+                # Write wrapper record as single line (JSONL format)
+                f.write(json.dumps(record, separators=(',', ':')) + '\n')
                 f.flush()
                 os.fsync(f.fileno())  # Force write to disk
                 
@@ -304,8 +317,14 @@ class AppendOnlyStorage:
         self._save_chain_state(chain_state)
         
         logger.info(f"Artifact {artifact_id} stored successfully with hash {computed_hash}")
-        
-        return artifact
+
+        return {
+            "artifact": artifact_copy,
+            "hash": computed_hash,
+            "artifact_id": artifact_id,
+            "parent_hash": artifact_copy.get("parent_hash"),
+            "timestamp_utc": artifact_copy.get("timestamp_utc"),
+        }
     
     def get_artifact(self, artifact_id: str) -> Optional[Dict]:
         """
@@ -329,11 +348,29 @@ class AppendOnlyStorage:
             with open(self.log_file, 'r') as f:
                 f.seek(position)
                 line = f.readline()
-                artifact = json.loads(line)
-                return artifact
+                entry = json.loads(line)
+                return self._extract_artifact_payload(entry)
         except Exception as e:
             logger.error(f"Failed to read artifact {artifact_id}: {e}")
             return None
+
+    def get_artifacts_by_trace_id(self, trace_id: str) -> List[Dict]:
+        """Return all stored artifacts for a trace_id, preserving payload exactly."""
+        matches: List[Dict] = []
+
+        try:
+            with open(self.log_file, 'r') as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    entry = json.loads(line)
+                    artifact = self._extract_artifact_payload(entry)
+                    if artifact.get("trace_id") == trace_id:
+                        matches.append(artifact)
+        except Exception as e:
+            logger.error(f"Failed to query artifacts by trace_id {trace_id}: {e}")
+
+        return matches
     
     def list_artifacts(self, limit: int = 100, offset: int = 0) -> Dict:
         """
@@ -359,8 +396,8 @@ class AppendOnlyStorage:
                     line = f.readline()
                     if not line:
                         break
-                    artifact = json.loads(line)
-                    artifacts.append(artifact)
+                    entry = json.loads(line)
+                    artifacts.append(self._extract_artifact_payload(entry))
         except Exception as e:
             logger.error(f"Failed to list artifacts: {e}")
         
@@ -398,14 +435,13 @@ class AppendOnlyStorage:
                         continue
                     
                     try:
-                        artifact = json.loads(line)
+                        entry = json.loads(line)
+                        artifact = self._extract_artifact_payload(entry)
                         artifact_count += 1
                         
                         # Verify hash
-                        stored_hash = artifact.get("hash")
-                        artifact_copy = artifact.copy()
-                        artifact_copy.pop("hash", None)
-                        computed_hash = self.compute_hash(artifact_copy)
+                        stored_hash = entry.get("hash")
+                        computed_hash = self.compute_hash(artifact)
                         
                         if stored_hash != computed_hash:
                             errors.append(

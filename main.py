@@ -193,13 +193,13 @@ class ContractBaseModel(BaseModel):
 
 class ArtifactEnvelope(ContractBaseModel):
     artifact_id: str
+    trace_id: str
     timestamp_utc: str
     schema_version: str
     source_module_id: str
     artifact_type: str
     parent_hash: Optional[str] = None
     payload: Dict
-    hash: Optional[str] = None
 
 
 class BucketArtifactsWriteRequest(ContractBaseModel):
@@ -2573,7 +2573,8 @@ async def get_bucket_artifact(artifact_id: str):
 @app.get("/bucket/artifacts")
 async def list_bucket_artifacts(
     limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
+    trace_id: Optional[str] = Query(None)
 ):
     """
     List all artifacts (read-only).
@@ -2586,6 +2587,18 @@ async def list_bucket_artifacts(
     - Merges with legacy storage if available
     """
     try:
+        if trace_id:
+            artifacts = append_only_storage.get_artifacts_by_trace_id(trace_id)
+            return {
+                "artifacts": artifacts,
+                "count": len(artifacts),
+                "total": len(artifacts),
+                "offset": 0,
+                "limit": len(artifacts),
+                "storage_type": "append_only",
+                "trace_id": trace_id,
+            }
+
         # NEW: Get from append-only storage
         append_only_result = append_only_storage.list_artifacts(limit, offset)
         
