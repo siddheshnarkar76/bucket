@@ -65,13 +65,18 @@ class AppendOnlyStorage:
     ]
     CURRENT_SCHEMA_VERSION = "1.0.0"
     
-    def __init__(self, storage_path: str = "data/artifacts"):
+    def __init__(self, storage_path: str = None):
         """
         Initialize append-only storage.
         
         Args:
-            storage_path: Directory for artifact storage
+            storage_path: Directory for artifact storage. If None, will use
+                the `BHIV_ARTIFACT_PATH` environment variable or default to
+                `data/artifacts`.
         """
+        # Allow overriding storage path via environment variable for staging
+        if storage_path is None:
+            storage_path = os.getenv("BHIV_ARTIFACT_PATH", "data/artifacts")
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
@@ -503,4 +508,5 @@ class AppendOnlyStorage:
 
 
 # Global storage instance
+# The storage path can be overridden with the BHIV_ARTIFACT_PATH env var
 append_only_storage = AppendOnlyStorage()
