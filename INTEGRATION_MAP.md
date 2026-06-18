@@ -16,6 +16,13 @@ Upstream (Producers)
   - Envelope expectations: same as contract; prefer `trace_id` top-level when deployed contract permits.
   - Contact: NICAI integration lead
 
+- Sarathi (Enforcement)
+  - Endpoint: POST /bucket/artifact
+  - Envelope: BHIV v1.0.0 (`product_namespace: SARATHI`, `source_module_id: sarathi.enforcement_adapter`, `artifact_type: enforcement_decision`)
+  - Integration guide: `SARATHI_BUCKET_INTEGRATION.md`
+  - Notes: Sarathi owns hash verification and receipt posting; Bucket is append-only store + authority hash
+  - Contact: Sarathi team / Siddhesh Narkar (Bucket)
+
 - Namami Gange / Marine (Telemetry)
   - Endpoint: POST /bucket/artifact
   - Envelope expectations: ingestion/perception artifact types; domain metadata in `payload`.

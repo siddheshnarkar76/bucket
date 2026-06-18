@@ -22,6 +22,7 @@ Bucket's role does **not** change under this model. Only the **admission layer**
 | SVACS (`svacs.*`) | ✅ Bounded | `product_namespace: SVACS` + approved `source_module_id` |
 | NICAI (`nicai.*`) | ✅ Bounded | `product_namespace: NICAI` + approved `source_module_id` |
 | Namami Gange (`namami.*`) | ✅ Bounded | `product_namespace: NAMAMI` + approved `source_module_id` |
+| Sarathi (`sarathi.*`) | ✅ Bounded | `product_namespace: SARATHI` + `sarathi.enforcement_adapter` — see `SARATHI_BUCKET_INTEGRATION.md` |
 | InsightFlow | ❌ Never | Read/observe only |
 | Unknown callers | ❌ Rejected | HTTP 400 |
 

@@ -171,6 +171,23 @@ Contract: `MULTI_PRODUCT_CONTRACT_GUIDE.md`
 
 Live proof: `REVIEW_PACKET.md`
 
+### Sarathi
+
+```json
+{
+  "source_module_id": "sarathi.enforcement_adapter",
+  "product_namespace": "SARATHI",
+  "artifact_type": "enforcement_decision",
+  "payload": {
+    "decision_id": "<id>",
+    "verdict": "ALLOW",
+    "canonical_response_b64": "<base64>"
+  }
+}
+```
+
+Full spec: `SARATHI_BUCKET_INTEGRATION.md`
+
 ---
 
 ## 5. Validation Rules
