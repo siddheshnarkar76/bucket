@@ -3241,5 +3241,5 @@ async def process_enhanced_query(request: EnhancedLegalQueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    port = int(os.getenv("FASTAPI_PORT", 8000))
+    port = int(os.getenv("PORT", os.getenv("FASTAPI_PORT", 8000)))
     uvicorn.run(app, host="0.0.0.0", port=port)
