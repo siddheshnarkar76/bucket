@@ -76,7 +76,7 @@ class AuditMiddleware:
             }
             
             # Store in MongoDB if available
-            if self.audit_collection:
+            if self.audit_collection is not None:
                 result = self.audit_collection.insert_one(audit_entry)
                 audit_id = str(result.inserted_id)
                 logger.debug(f"Audit entry created: {audit_id}")
@@ -108,7 +108,7 @@ class AuditMiddleware:
             List of audit entries in chronological order
         """
         try:
-            if self.audit_collection:
+            if self.audit_collection is not None:
                 cursor = self.audit_collection.find(
                     {"artifact_id": artifact_id}
                 ).sort("timestamp", 1).limit(limit)
@@ -147,7 +147,7 @@ class AuditMiddleware:
             List of audit entries
         """
         try:
-            if self.audit_collection:
+            if self.audit_collection is not None:
                 cursor = self.audit_collection.find(
                     {"requester_id": requester_id}
                 ).sort("timestamp", -1).limit(limit)
@@ -190,7 +190,7 @@ class AuditMiddleware:
             if operation_type:
                 query["operation_type"] = operation_type
             
-            if self.audit_collection:
+            if self.audit_collection is not None:
                 cursor = self.audit_collection.find(query).sort("timestamp", -1).limit(limit)
                 
                 operations = []
@@ -228,7 +228,7 @@ class AuditMiddleware:
             List of failed audit entries
         """
         try:
-            if self.audit_collection:
+            if self.audit_collection is not None:
                 cursor = self.audit_collection.find(
                     {"status": {"$in": ["failure", "blocked"]}}
                 ).sort("timestamp", -1).limit(limit)
