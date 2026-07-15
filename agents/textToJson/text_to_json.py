@@ -62,9 +62,9 @@ class APIClient:
                 else:
                     logger.warning(f"Authentication failed: {response.status}")
                     return False
-    except Exception as e:
-        logger.error(f"Authentication error: {e}")
-        return False
+        except Exception as e:
+            logger.error(f"Authentication error: {e}")
+            return False
 
     async def call_endpoint(self, endpoint: str, method: str = "GET", data: Dict = None) -> Dict:
         """Call a specific API endpoint"""
