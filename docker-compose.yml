@@ -1,17 +1,35 @@
-version: '3.8'
 services:
+  bucket-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bhiv_bucket_backend_dev
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - FASTAPI_PORT=8000
+    volumes:
+      - .:/app
+    networks:
+      - bucket_network
+
   redis:
     image: redis:7.0-alpine
+    container_name: bhiv_bucket_redis_dev
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     networks:
-      - ai_integration_network
+      - bucket_network
 
 volumes:
   redis_data:
 
 networks:
-  ai_integration_network:
+  bucket_network:
     driver: bridge
